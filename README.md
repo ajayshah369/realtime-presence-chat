@@ -37,21 +37,27 @@ Four Lambda functions handle the WebSocket lifecycle:
 
 ## Project structure
 
+This is a monorepo: `backend/` (AWS CDK + Lambda, this README's main focus for now) and `frontend/` (Next.js app, in progress — see roadmap below).
+
 ```
 realtime-presence-chat/
-├── cdk/
-│   ├── bin/app.js                     # CDK app entry point
-│   └── lib/realtime-dashboard-stack.js # Infrastructure definition
-├── lambda/
-│   ├── connect.js
-│   ├── disconnect.js
-│   ├── sendMessage.js
-│   └── default.js
-├── client/
-│   └── index.html                     # Browser test client
-├── cdk.json
-├── package.json
-└── README.md
+├── backend/
+│   ├── cdk/
+│   │   ├── bin/app.js                     # CDK app entry point
+│   │   └── lib/realtime-dashboard-stack.js # Infrastructure definition
+│   ├── lambda/
+│   │   ├── connect.js
+│   │   ├── disconnect.js
+│   │   ├── sendMessage.js
+│   │   └── default.js
+│   ├── client/
+│   │   └── index.html                     # Plain-HTML WebSocket test client
+│   ├── cdk.json
+│   └── package.json
+├── frontend/                              # Next.js app (placeholder for now)
+├── README.md
+├── AGENTS.md
+└── CLAUDE.md
 ```
 
 ## Prerequisites
@@ -63,6 +69,7 @@ realtime-presence-chat/
 ## Setup
 
 ```bash
+cd backend
 npm install
 
 # one-time per AWS account/region
@@ -72,6 +79,7 @@ cdk bootstrap aws://<ACCOUNT_ID>/<REGION>
 ## Deploy
 
 ```bash
+cd backend
 cdk deploy
 ```
 
@@ -94,7 +102,7 @@ Once connected, send: `{"action": "sendMessage", "text": "hello"}`
 
 **Full test with the browser client:**
 
-1. Open `client/index.html` in two browser tabs
+1. Open `backend/client/index.html` in two browser tabs
 2. Paste the `WebSocketURL` into each, give each tab a different username, click Connect
 3. Send a message from one tab — it should appear in both, proving the broadcast fan-out works
 
@@ -105,6 +113,7 @@ Once connected, send: `{"action": "sendMessage", "text": "hello"}`
 Everything here is pay-per-use, so idle cost is near zero, but tear it down when you're done demoing:
 
 ```bash
+cd backend
 cdk destroy
 ```
 
@@ -112,11 +121,15 @@ cdk destroy
 
 It goes beyond a typical CRUD tutorial: it requires reasoning about connection state in a stateless compute model (Lambda has no memory between invocations, so DynamoDB stands in for the "who's connected" state a long-running server would normally hold in memory), handling partial failure during a broadcast (one dead connection shouldn't break delivery to everyone else), and expressing the whole thing as versioned, reviewable infrastructure code instead of console clicks.
 
-## Extending it (good follow-up commits)
+## Roadmap
 
-- Broadcast a live "N users online" count alongside chat messages
-- Add chat rooms/channels (partition connections by a `room` attribute)
-- Persist message history to a second DynamoDB table
-- Swap the plain-HTML client for a small React app
-- Add Cognito auth so `username` isn't self-reported
-- Add a GitHub Actions workflow that runs `cdk diff` on PRs and `cdk deploy` on merge to main
+This project is growing from a WebSocket demo into a full messaging platform (auth, 1:1 and group chat, file sharing, notifications), built serverless first and later rebuilt as a comparison project on self-managed microservices infrastructure. Current/planned phases:
+
+1. Migrate backend to TypeScript
+2. Authentication (Cognito + Google) + Next.js frontend scaffold
+3. Persistent 1:1 chat (message history, conversations)
+4. Group chat
+5. File sharing (images, PDFs, audio, video via S3)
+6. Notifications (push + delivered/read receipts)
+7. Stretch: message search, load testing, rate limiting
+8. Rebuild the same feature set on self-managed microservices infrastructure, for comparison

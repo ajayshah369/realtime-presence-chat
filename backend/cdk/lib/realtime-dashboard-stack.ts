@@ -1,12 +1,13 @@
-const path = require("path");
-const cdk = require("aws-cdk-lib");
-const dynamodb = require("aws-cdk-lib/aws-dynamodb");
-const lambda = require("aws-cdk-lib/aws-lambda");
-const apigwv2 = require("aws-cdk-lib/aws-apigatewayv2");
-const integrations = require("aws-cdk-lib/aws-apigatewayv2-integrations");
+import * as path from "path";
+import * as cdk from "aws-cdk-lib";
+import { Construct } from "constructs";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
+import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
+import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 
-class RealtimeDashboardStack extends cdk.Stack {
-  constructor(scope, id, props) {
+export class RealtimeDashboardStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     const connectionsTable = new dynamodb.Table(this, "ConnectionsTable", {
@@ -18,36 +19,25 @@ class RealtimeDashboardStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    const runtime = lambda.Runtime.NODEJS_20_X;
-    const lambdaAsset = lambda.Code.fromAsset(
-      path.join(__dirname, "../../lambda"),
-    );
     const commonEnv = { TABLE_NAME: connectionsTable.tableName };
+    const lambdaDir = path.join(__dirname, "../../lambda");
 
-    const connectFn = new lambda.Function(this, "ConnectFn", {
-      runtime,
-      handler: "connect.handler",
-      code: lambdaAsset,
+    const connectFn = new NodejsFunction(this, "ConnectFn", {
+      entry: path.join(lambdaDir, "connect.ts"),
       environment: commonEnv,
     });
 
-    const disconnectFn = new lambda.Function(this, "DisconnectFn", {
-      runtime,
-      handler: "disconnect.handler",
-      code: lambdaAsset,
+    const disconnectFn = new NodejsFunction(this, "DisconnectFn", {
+      entry: path.join(lambdaDir, "disconnect.ts"),
       environment: commonEnv,
     });
 
-    const defaultFn = new lambda.Function(this, "DefaultFn", {
-      runtime,
-      handler: "default.handler",
-      code: lambdaAsset,
+    const defaultFn = new NodejsFunction(this, "DefaultFn", {
+      entry: path.join(lambdaDir, "default.ts"),
     });
 
-    const sendMessageFn = new lambda.Function(this, "SendMessageFn", {
-      runtime,
-      handler: "sendMessage.handler",
-      code: lambdaAsset,
+    const sendMessageFn = new NodejsFunction(this, "SendMessageFn", {
+      entry: path.join(lambdaDir, "sendMessage.ts"),
       environment: commonEnv,
     });
 
@@ -101,5 +91,3 @@ class RealtimeDashboardStack extends cdk.Stack {
     });
   }
 }
-
-module.exports = { RealtimeDashboardStack };

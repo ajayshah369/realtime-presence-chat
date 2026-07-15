@@ -13,27 +13,27 @@ sequenceDiagram
     participant DynamoDB
 
     Client A->>API Gateway (WebSocket): $connect ?username=ajay
-    API Gateway (WebSocket)->>Lambda: connect.js
+    API Gateway (WebSocket)->>Lambda: connect.ts
     Lambda->>DynamoDB: PutItem(connectionId, username)
 
     Client B->>API Gateway (WebSocket): $connect ?username=sam
-    API Gateway (WebSocket)->>Lambda: connect.js
+    API Gateway (WebSocket)->>Lambda: connect.ts
     Lambda->>DynamoDB: PutItem(connectionId, username)
 
     Client A->>API Gateway (WebSocket): {action: "sendMessage", text}
-    API Gateway (WebSocket)->>Lambda: sendMessage.js
+    API Gateway (WebSocket)->>Lambda: sendMessage.ts
     Lambda->>DynamoDB: Scan connections
     Lambda->>API Gateway (WebSocket): PostToConnection (A and B)
     API Gateway (WebSocket)->>Client A: broadcast message
     API Gateway (WebSocket)->>Client B: broadcast message
 ```
 
-Four Lambda functions handle the WebSocket lifecycle:
+Four Lambda functions (TypeScript, bundled individually via CDK's `NodejsFunction`) handle the WebSocket lifecycle:
 
-- **`connect.js`** — runs on `$connect`, stores `connectionId` + `username` in DynamoDB
-- **`disconnect.js`** — runs on `$disconnect`, removes that row
-- **`sendMessage.js`** — runs on the custom `sendMessage` route, scans all open connections and pushes the message to each one via the API Gateway Management API, pruning any connection that comes back `410 Gone` (stale/closed without a clean disconnect)
-- **`default.js`** — catch-all for any message whose `action` doesn't match a known route
+- **`connect.ts`** — runs on `$connect`, stores `connectionId` + `username` in DynamoDB
+- **`disconnect.ts`** — runs on `$disconnect`, removes that row
+- **`sendMessage.ts`** — runs on the custom `sendMessage` route, scans all open connections and pushes the message to each one via the API Gateway Management API, pruning any connection that comes back `410 Gone` (stale/closed without a clean disconnect)
+- **`default.ts`** — catch-all for any message whose `action` doesn't match a known route
 
 ## Project structure
 
@@ -43,16 +43,17 @@ This is a monorepo: `backend/` (AWS CDK + Lambda, this README's main focus for n
 realtime-presence-chat/
 ├── backend/
 │   ├── cdk/
-│   │   ├── bin/app.js                     # CDK app entry point
-│   │   └── lib/realtime-dashboard-stack.js # Infrastructure definition
+│   │   ├── bin/app.ts                     # CDK app entry point
+│   │   └── lib/realtime-dashboard-stack.ts # Infrastructure definition
 │   ├── lambda/
-│   │   ├── connect.js
-│   │   ├── disconnect.js
-│   │   ├── sendMessage.js
-│   │   └── default.js
+│   │   ├── connect.ts
+│   │   ├── disconnect.ts
+│   │   ├── sendMessage.ts
+│   │   └── default.ts
 │   ├── client/
 │   │   └── index.html                     # Plain-HTML WebSocket test client
 │   ├── cdk.json
+│   ├── tsconfig.json
 │   └── package.json
 ├── frontend/                              # Next.js app (placeholder for now)
 ├── README.md
@@ -125,7 +126,7 @@ It goes beyond a typical CRUD tutorial: it requires reasoning about connection s
 
 This project is growing from a WebSocket demo into a full messaging platform (auth, 1:1 and group chat, file sharing, notifications), built serverless first and later rebuilt as a comparison project on self-managed microservices infrastructure. Current/planned phases:
 
-1. Migrate backend to TypeScript
+1. ~~Migrate backend to TypeScript~~ — done
 2. Authentication (Cognito + Google) + Next.js frontend scaffold
 3. Persistent 1:1 chat (message history, conversations)
 4. Group chat

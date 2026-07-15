@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-const cdk = require("aws-cdk-lib");
-const { RealtimeDashboardStack } = require("../lib/realtime-dashboard-stack");
+import * as cdk from "aws-cdk-lib";
+import { RealtimeDashboardStack } from "../lib/realtime-dashboard-stack.js";
 
 const app = new cdk.App();
 

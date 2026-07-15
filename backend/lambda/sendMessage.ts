@@ -1,28 +1,40 @@
-const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const {
+import { APIGatewayProxyWebsocketHandlerV2 } from "aws-lambda";
+
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
   DynamoDBDocumentClient,
   ScanCommand,
   DeleteCommand,
-} = require("@aws-sdk/lib-dynamodb");
-const {
+} from "@aws-sdk/lib-dynamodb";
+import {
   ApiGatewayManagementApiClient,
   PostToConnectionCommand,
-} = require("@aws-sdk/client-apigatewaymanagementapi");
+} from "@aws-sdk/client-apigatewaymanagementapi";
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
-const TABLE_NAME = process.env.TABLE_NAME;
+const TABLE_NAME = process.env.TABLE_NAME!;
 
-exports.handler = async (event) => {
+interface ConnectionItem {
+  connectionId: string;
+  username?: string;
+  connectedAt?: string;
+}
+
+interface SendMessagePayload {
+  text: string;
+}
+
+export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
   const { domainName, stage, connectionId: senderId } = event.requestContext;
   const apiClient = new ApiGatewayManagementApiClient({
     endpoint: `https://${domainName}/${stage}`,
   });
 
-  let body;
+  let body: Partial<SendMessagePayload>;
   try {
-    body = JSON.parse(event.body);
-  } catch (err) {
+    body = JSON.parse(event.body ?? "");
+  } catch {
     return { statusCode: 400, body: "Invalid JSON payload" };
   }
 
@@ -31,7 +43,7 @@ exports.handler = async (event) => {
   }
 
   const scanResult = await ddb.send(new ScanCommand({ TableName: TABLE_NAME }));
-  const connections = scanResult.Items || [];
+  const connections = (scanResult.Items ?? []) as ConnectionItem[];
   const sender = connections.find((c) => c.connectionId === senderId);
 
   const payload = Buffer.from(
@@ -43,7 +55,7 @@ exports.handler = async (event) => {
     }),
   );
 
-  const staleConnectionIds = [];
+  const staleConnectionIds: string[] = [];
 
   await Promise.all(
     connections.map(async ({ connectionId }) => {
@@ -54,8 +66,14 @@ exports.handler = async (event) => {
             Data: payload,
           }),
         );
-      } catch (err) {
-        if (err.$metadata && err.$metadata.httpStatusCode === 410) {
+      } catch (err: unknown) {
+        const statusCode =
+          err && typeof err === "object" && "$metadata" in err
+            ? (err as { $metadata?: { httpStatusCode?: number } }).$metadata
+                ?.httpStatusCode
+            : undefined;
+
+        if (statusCode === 410) {
           staleConnectionIds.push(connectionId);
         } else {
           console.error(`Failed to post to connection ${connectionId}`, err);

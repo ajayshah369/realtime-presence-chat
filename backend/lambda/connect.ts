@@ -1,11 +1,12 @@
-const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, PutCommand } = require("@aws-sdk/lib-dynamodb");
+import { APIGatewayProxyWebsocketHandlerV2 } from "aws-lambda";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
-const TABLE_NAME = process.env.TABLE_NAME;
+const TABLE_NAME = process.env.TABLE_NAME!;
 
-exports.handler = async (event) => {
+export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
   const connectionId = event.requestContext.connectionId;
   const username =
     (event.queryStringParameters && event.queryStringParameters.username) ||
@@ -15,7 +16,7 @@ exports.handler = async (event) => {
     new PutCommand({
       TableName: TABLE_NAME,
       Item: { connectionId, username, connectedAt: new Date().toISOString() },
-    }),
+    })
   );
 
   return { statusCode: 200, body: "Connected" };

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from "aws-cdk-lib";
-import { RealtimeDashboardStack } from "../lib/realtime-dashboard-stack.js";
+import { RealtimeDashboardStack } from "../lib/realtime-dashboard-stack";
 
 const app = new cdk.App();
 

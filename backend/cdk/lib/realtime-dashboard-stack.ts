@@ -5,6 +5,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import * as lambda from "aws-cdk-lib/aws-lambda";
 
 export class RealtimeDashboardStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -22,21 +23,27 @@ export class RealtimeDashboardStack extends cdk.Stack {
     const commonEnv = { TABLE_NAME: connectionsTable.tableName };
     const lambdaDir = path.join(__dirname, "../../lambda");
 
+    const runtime = lambda.Runtime.NODEJS_20_X;
+
     const connectFn = new NodejsFunction(this, "ConnectFn", {
+      runtime,
       entry: path.join(lambdaDir, "connect.ts"),
       environment: commonEnv,
     });
 
     const disconnectFn = new NodejsFunction(this, "DisconnectFn", {
+      runtime,
       entry: path.join(lambdaDir, "disconnect.ts"),
       environment: commonEnv,
     });
 
     const defaultFn = new NodejsFunction(this, "DefaultFn", {
+      runtime,
       entry: path.join(lambdaDir, "default.ts"),
     });
 
     const sendMessageFn = new NodejsFunction(this, "SendMessageFn", {
+      runtime,
       entry: path.join(lambdaDir, "sendMessage.ts"),
       environment: commonEnv,
     });

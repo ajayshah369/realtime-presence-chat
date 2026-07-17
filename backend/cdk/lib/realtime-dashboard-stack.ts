@@ -44,6 +44,34 @@ export class RealtimeDashboardStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    const conversationsTable = new dynamodb.Table(this, "ConversationsTable", {
+      partitionKey: {
+        name: "conversationId",
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const conversationMembersTable = new dynamodb.Table(
+      this,
+      "ConversationMembersTable",
+      {
+        partitionKey: {
+          name: "conversationId",
+          type: dynamodb.AttributeType.STRING,
+        },
+        sortKey: { name: "userId", type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      },
+    );
+
+    conversationMembersTable.addGlobalSecondaryIndex({
+      indexName: "byUserId",
+      partitionKey: { name: "userId", type: dynamodb.AttributeType.STRING },
+    });
+
     const messagesTable = new dynamodb.Table(this, "MessagesTable", {
       partitionKey: {
         name: "conversationId",
@@ -105,16 +133,37 @@ export class RealtimeDashboardStack extends cdk.Stack {
       environment: {
         TABLE_NAME: connectionsTable.tableName,
         MESSAGES_TABLE_NAME: messagesTable.tableName,
+        CONVERSATIONS_TABLE_NAME: conversationsTable.tableName,
+        CONVERSATION_MEMBERS_TABLE_NAME: conversationMembersTable.tableName,
       },
     });
 
+    const createConversationFn = new NodejsFunction(
+      this,
+      "CreateConversationFn",
+      {
+        runtime,
+        entry: path.join(lambdaDir, "createConversation.ts"),
+        environment: {
+          TABLE_NAME: connectionsTable.tableName,
+          CONVERSATIONS_TABLE_NAME: conversationsTable.tableName,
+          CONVERSATION_MEMBERS_TABLE_NAME: conversationMembersTable.tableName,
+        },
+      },
+    );
+
     connectionsTable.grantReadWriteData(connectFn);
     connectionsTable.grantReadWriteData(disconnectFn);
-    // connectionsTable.grantReadWriteData(sendMessageFn);
     usersTable.grantReadWriteData(connectFn);
     usersTable.grantReadWriteData(sendMessageFn);
     messagesTable.grantReadWriteData(sendMessageFn);
-    connectionsTable.grantReadWriteData(sendMessageFn); // already granted, but now also needs read for the GSI query
+    connectionsTable.grantReadWriteData(sendMessageFn);
+    connectionsTable.grantReadData(createConversationFn);
+    messagesTable.grantReadWriteData(sendMessageFn);
+    conversationsTable.grantReadWriteData(sendMessageFn);
+    conversationsTable.grantReadWriteData(createConversationFn);
+    conversationMembersTable.grantReadWriteData(sendMessageFn);
+    conversationMembersTable.grantReadWriteData(createConversationFn);
 
     const webSocketApi = new apigwv2.WebSocketApi(
       this,
@@ -141,6 +190,13 @@ export class RealtimeDashboardStack extends cdk.Stack {
         },
       },
     );
+
+    webSocketApi.addRoute("createGroup", {
+      integration: new integrations.WebSocketLambdaIntegration(
+        "CreateGroupIntegration",
+        createConversationFn,
+      ),
+    });
 
     webSocketApi.addRoute("sendMessage", {
       integration: new integrations.WebSocketLambdaIntegration(

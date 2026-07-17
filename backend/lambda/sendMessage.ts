@@ -15,8 +15,12 @@ import {
 
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
+
 const TABLE_NAME = process.env.TABLE_NAME!;
 const MESSAGES_TABLE_NAME = process.env.MESSAGES_TABLE_NAME!;
+const CONVERSATIONS_TABLE_NAME = process.env.CONVERSATIONS_TABLE_NAME!;
+const CONVERSATION_MEMBERS_TABLE_NAME =
+  process.env.CONVERSATION_MEMBERS_TABLE_NAME!;
 
 interface ConnectionItem {
   connectionId: string;
@@ -25,12 +29,13 @@ interface ConnectionItem {
 }
 
 interface SendMessagePayload {
-  recipientUserId: string;
+  conversationId?: string;
+  recipientUserId?: string; // shorthand: "message this person, creating a DM if needed"
   text: string;
 }
 
-function buildConversationId(userA: string, userB: string): string {
-  return [userA, userB].sort().join("#");
+function buildDmConversationId(userA: string, userB: string): string {
+  return `dm#${[userA, userB].sort().join("#")}`;
 }
 
 async function getConnectionsForUser(
@@ -47,6 +52,70 @@ async function getConnectionsForUser(
   return (result.Items ?? []) as ConnectionItem[];
 }
 
+async function getConversationMembers(
+  conversationId: string,
+): Promise<string[]> {
+  const result = await ddb.send(
+    new QueryCommand({
+      TableName: CONVERSATION_MEMBERS_TABLE_NAME,
+      KeyConditionExpression: "conversationId = :conversationId",
+      ExpressionAttributeValues: { ":conversationId": conversationId },
+    }),
+  );
+  return (result.Items ?? []).map((item) => item.userId as string);
+}
+
+async function isMember(
+  conversationId: string,
+  userId: string,
+): Promise<boolean> {
+  const result = await ddb.send(
+    new GetCommand({
+      TableName: CONVERSATION_MEMBERS_TABLE_NAME,
+      Key: { conversationId, userId },
+    }),
+  );
+  return !!result.Item;
+}
+
+async function ensureDirectConversation(
+  userA: string,
+  userB: string,
+): Promise<string> {
+  const conversationId = buildDmConversationId(userA, userB);
+  const now = new Date().toISOString();
+
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: CONVERSATIONS_TABLE_NAME,
+        Item: { conversationId, type: "dm", createdBy: userA, createdAt: now },
+        ConditionExpression: "attribute_not_exists(conversationId)",
+      }),
+    );
+  } catch (err: unknown) {
+    const isAlreadyExists =
+      err &&
+      typeof err === "object" &&
+      "name" in err &&
+      (err as { name?: string }).name === "ConditionalCheckFailedException";
+    if (!isAlreadyExists) throw err;
+  }
+
+  await Promise.all(
+    [userA, userB].map((userId) =>
+      ddb.send(
+        new PutCommand({
+          TableName: CONVERSATION_MEMBERS_TABLE_NAME,
+          Item: { conversationId, userId, joinedAt: now },
+        }),
+      ),
+    ),
+  );
+
+  return conversationId;
+}
+
 export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
   const {
     domainName,
@@ -57,9 +126,6 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     endpoint: `https://${domainName}/${stage}`,
   });
 
-  // sendMessage isn't behind the authorizer (only $connect is), so we
-  // recover the sender's verified identity from the record connect.ts
-  // already wrote for this connectionId.
   const senderRecord = await ddb.send(
     new GetCommand({
       TableName: TABLE_NAME,
@@ -72,24 +138,37 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     return { statusCode: 401, body: "Unknown connection" };
   }
 
-  let body: Partial<SendMessagePayload>;
+  let body: SendMessagePayload;
   try {
     body = JSON.parse(event.body ?? "");
   } catch {
     return { statusCode: 400, body: "Invalid JSON payload" };
   }
 
-  if (!body.recipientUserId || !body.text) {
+  if (!body.text || (!body.conversationId && !body.recipientUserId)) {
     return {
       statusCode: 400,
-      body: 'Payload must include "recipientUserId" and "text"',
+      body: 'Payload must include "text" and either "conversationId" or "recipientUserId"',
     };
   }
 
-  const conversationId = buildConversationId(
-    sender.userId,
-    body.recipientUserId,
-  );
+  let conversationId: string;
+
+  if (body.conversationId) {
+    if (!(await isMember(body.conversationId, sender.userId))) {
+      return {
+        statusCode: 403,
+        body: "You are not a member of this conversation",
+      };
+    }
+    conversationId = body.conversationId;
+  } else {
+    conversationId = await ensureDirectConversation(
+      sender.userId,
+      body.recipientUserId!,
+    );
+  }
+
   const timestamp = new Date().toISOString();
   const messageId = randomUUID();
 
@@ -100,21 +179,17 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
         conversationId,
         sortKey: `${timestamp}#${messageId}`,
         senderId: sender.userId,
-        recipientUserId: body.recipientUserId,
         text: body.text,
         sentAt: timestamp,
       },
     }),
   );
 
-  // Deliver to the recipient's active connections, plus the sender's own
-  // other open tabs/devices (so you see your own message everywhere you're
-  // logged in, not just the tab that sent it).
-  const [recipientConnections, senderConnections] = await Promise.all([
-    getConnectionsForUser(body.recipientUserId),
-    getConnectionsForUser(sender.userId),
-  ]);
-  const targetConnections = [...recipientConnections, ...senderConnections];
+  const memberIds = await getConversationMembers(conversationId);
+  const connectionGroups = await Promise.all(
+    memberIds.map(getConnectionsForUser),
+  );
+  const targetConnections = connectionGroups.flat();
 
   const payload = Buffer.from(
     JSON.stringify({
@@ -144,7 +219,6 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
             ? (err as { $metadata?: { httpStatusCode?: number } }).$metadata
                 ?.httpStatusCode
             : undefined;
-
         if (statusCode === 410) {
           staleConnectionIds.push(connectionId);
         } else {

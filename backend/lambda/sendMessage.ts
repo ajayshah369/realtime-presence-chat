@@ -1,9 +1,11 @@
 import { APIGatewayProxyWebsocketHandlerV2 } from "aws-lambda";
-
+import { randomUUID } from "crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
-  ScanCommand,
+  GetCommand,
+  QueryCommand,
+  PutCommand,
   DeleteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import {
@@ -14,22 +16,61 @@ import {
 const ddbClient = new DynamoDBClient({});
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 const TABLE_NAME = process.env.TABLE_NAME!;
+const MESSAGES_TABLE_NAME = process.env.MESSAGES_TABLE_NAME!;
 
 interface ConnectionItem {
   connectionId: string;
+  userId: string;
   username?: string;
-  connectedAt?: string;
 }
 
 interface SendMessagePayload {
+  recipientUserId: string;
   text: string;
 }
 
+function buildConversationId(userA: string, userB: string): string {
+  return [userA, userB].sort().join("#");
+}
+
+async function getConnectionsForUser(
+  userId: string,
+): Promise<ConnectionItem[]> {
+  const result = await ddb.send(
+    new QueryCommand({
+      TableName: TABLE_NAME,
+      IndexName: "byUserId",
+      KeyConditionExpression: "userId = :userId",
+      ExpressionAttributeValues: { ":userId": userId },
+    }),
+  );
+  return (result.Items ?? []) as ConnectionItem[];
+}
+
 export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
-  const { domainName, stage, connectionId: senderId } = event.requestContext;
+  const {
+    domainName,
+    stage,
+    connectionId: senderConnectionId,
+  } = event.requestContext;
   const apiClient = new ApiGatewayManagementApiClient({
     endpoint: `https://${domainName}/${stage}`,
   });
+
+  // sendMessage isn't behind the authorizer (only $connect is), so we
+  // recover the sender's verified identity from the record connect.ts
+  // already wrote for this connectionId.
+  const senderRecord = await ddb.send(
+    new GetCommand({
+      TableName: TABLE_NAME,
+      Key: { connectionId: senderConnectionId },
+    }),
+  );
+  const sender = senderRecord.Item as ConnectionItem | undefined;
+
+  if (!sender) {
+    return { statusCode: 401, body: "Unknown connection" };
+  }
 
   let body: Partial<SendMessagePayload>;
   try {
@@ -38,27 +79,58 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     return { statusCode: 400, body: "Invalid JSON payload" };
   }
 
-  if (!body.text || typeof body.text !== "string") {
-    return { statusCode: 400, body: 'Payload must include a "text" string' };
+  if (!body.recipientUserId || !body.text) {
+    return {
+      statusCode: 400,
+      body: 'Payload must include "recipientUserId" and "text"',
+    };
   }
 
-  const scanResult = await ddb.send(new ScanCommand({ TableName: TABLE_NAME }));
-  const connections = (scanResult.Items ?? []) as ConnectionItem[];
-  const sender = connections.find((c) => c.connectionId === senderId);
+  const conversationId = buildConversationId(
+    sender.userId,
+    body.recipientUserId,
+  );
+  const timestamp = new Date().toISOString();
+  const messageId = randomUUID();
+
+  await ddb.send(
+    new PutCommand({
+      TableName: MESSAGES_TABLE_NAME,
+      Item: {
+        conversationId,
+        sortKey: `${timestamp}#${messageId}`,
+        senderId: sender.userId,
+        recipientUserId: body.recipientUserId,
+        text: body.text,
+        sentAt: timestamp,
+      },
+    }),
+  );
+
+  // Deliver to the recipient's active connections, plus the sender's own
+  // other open tabs/devices (so you see your own message everywhere you're
+  // logged in, not just the tab that sent it).
+  const [recipientConnections, senderConnections] = await Promise.all([
+    getConnectionsForUser(body.recipientUserId),
+    getConnectionsForUser(sender.userId),
+  ]);
+  const targetConnections = [...recipientConnections, ...senderConnections];
 
   const payload = Buffer.from(
     JSON.stringify({
       type: "message",
-      username: sender ? sender.username : "unknown",
+      conversationId,
+      senderId: sender.userId,
+      senderUsername: sender.username,
       text: body.text,
-      timestamp: new Date().toISOString(),
+      timestamp,
     }),
   );
 
   const staleConnectionIds: string[] = [];
 
   await Promise.all(
-    connections.map(async ({ connectionId }) => {
+    targetConnections.map(async ({ connectionId }) => {
       try {
         await apiClient.send(
           new PostToConnectionCommand({
@@ -90,5 +162,5 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     ),
   );
 
-  return { statusCode: 200, body: "Message broadcast" };
+  return { statusCode: 200, body: "Message sent" };
 };

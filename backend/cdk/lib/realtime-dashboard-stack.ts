@@ -30,6 +30,34 @@ export class RealtimeDashboardStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // New: lets us query "give me every active connection for this user"
+    // instead of scanning the whole table — needed since one person can
+    // have multiple tabs/devices open (multiple connectionIds, one userId).
+    connectionsTable.addGlobalSecondaryIndex({
+      indexName: "byUserId",
+      partitionKey: { name: "userId", type: dynamodb.AttributeType.STRING },
+    });
+
+    const usersTable = new dynamodb.Table(this, "UsersTable", {
+      partitionKey: { name: "userId", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const messagesTable = new dynamodb.Table(this, "MessagesTable", {
+      partitionKey: {
+        name: "conversationId",
+        type: dynamodb.AttributeType.STRING,
+      },
+      // sortKey format: `${timestamp}#${messageId}` — keeps messages ordered
+      // chronologically within a conversation and paginable, while the
+      // messageId suffix guarantees uniqueness if two messages land in the
+      // same millisecond.
+      sortKey: { name: "sortKey", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     const runtime = lambda.Runtime.NODEJS_20_X;
     const lambdaDir = path.join(__dirname, "../../lambda");
     const commonEnv = { TABLE_NAME: connectionsTable.tableName };
@@ -54,7 +82,10 @@ export class RealtimeDashboardStack extends cdk.Stack {
     const connectFn = new NodejsFunction(this, "ConnectFn", {
       runtime,
       entry: path.join(lambdaDir, "connect.ts"),
-      environment: commonEnv,
+      environment: {
+        TABLE_NAME: connectionsTable.tableName,
+        USERS_TABLE_NAME: usersTable.tableName,
+      },
     });
 
     const disconnectFn = new NodejsFunction(this, "DisconnectFn", {
@@ -71,12 +102,19 @@ export class RealtimeDashboardStack extends cdk.Stack {
     const sendMessageFn = new NodejsFunction(this, "SendMessageFn", {
       runtime,
       entry: path.join(lambdaDir, "sendMessage.ts"),
-      environment: commonEnv,
+      environment: {
+        TABLE_NAME: connectionsTable.tableName,
+        MESSAGES_TABLE_NAME: messagesTable.tableName,
+      },
     });
 
     connectionsTable.grantReadWriteData(connectFn);
     connectionsTable.grantReadWriteData(disconnectFn);
-    connectionsTable.grantReadWriteData(sendMessageFn);
+    // connectionsTable.grantReadWriteData(sendMessageFn);
+    usersTable.grantReadWriteData(connectFn);
+    usersTable.grantReadWriteData(sendMessageFn);
+    messagesTable.grantReadWriteData(sendMessageFn);
+    connectionsTable.grantReadWriteData(sendMessageFn); // already granted, but now also needs read for the GSI query
 
     const webSocketApi = new apigwv2.WebSocketApi(
       this,

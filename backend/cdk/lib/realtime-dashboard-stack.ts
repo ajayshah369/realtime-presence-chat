@@ -5,10 +5,20 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import { WebSocketLambdaAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 
+interface RealtimeDashboardStackProps extends cdk.StackProps {
+  userPoolId: string;
+  userPoolClientId: string;
+}
+
 export class RealtimeDashboardStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(
+    scope: Construct,
+    id: string,
+    props: RealtimeDashboardStackProps,
+  ) {
     super(scope, id, props);
 
     const connectionsTable = new dynamodb.Table(this, "ConnectionsTable", {
@@ -20,10 +30,26 @@ export class RealtimeDashboardStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    const commonEnv = { TABLE_NAME: connectionsTable.tableName };
-    const lambdaDir = path.join(__dirname, "../../lambda");
-
     const runtime = lambda.Runtime.NODEJS_20_X;
+    const lambdaDir = path.join(__dirname, "../../lambda");
+    const commonEnv = { TABLE_NAME: connectionsTable.tableName };
+
+    const authorizerFn = new NodejsFunction(this, "AuthorizerFn", {
+      runtime,
+      entry: path.join(lambdaDir, "authorizer.ts"),
+      environment: {
+        USER_POOL_ID: props.userPoolId,
+        USER_POOL_CLIENT_ID: props.userPoolClientId,
+      },
+    });
+
+    const connectAuthorizer = new WebSocketLambdaAuthorizer(
+      "ConnectAuthorizer",
+      authorizerFn,
+      {
+        identitySource: ["route.request.querystring.token"],
+      },
+    );
 
     const connectFn = new NodejsFunction(this, "ConnectFn", {
       runtime,
@@ -61,6 +87,7 @@ export class RealtimeDashboardStack extends cdk.Stack {
             "ConnectIntegration",
             connectFn,
           ),
+          authorizer: connectAuthorizer,
         },
         disconnectRouteOptions: {
           integration: new integrations.WebSocketLambdaIntegration(
@@ -92,9 +119,6 @@ export class RealtimeDashboardStack extends cdk.Stack {
 
     stage.grantManagementApiAccess(sendMessageFn);
 
-    new cdk.CfnOutput(this, "WebSocketURL", {
-      value: stage.url,
-      description: "wss:// URL clients connect to",
-    });
+    new cdk.CfnOutput(this, "WebSocketURL", { value: stage.url });
   }
 }

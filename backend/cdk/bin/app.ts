@@ -11,10 +11,14 @@ const env = {
   region: process.env.CDK_DEFAULT_REGION || "ap-south-1",
 };
 
-new RealtimeDashboardStack(app, "RealtimeDashboardStack", { env });
-
-new AuthStack(app, "AuthStack", {
+const authStack = new AuthStack(app, "AuthStack", {
   env,
   googleClientId: process.env.GOOGLE_CLIENT_ID!,
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+});
+
+new RealtimeDashboardStack(app, "RealtimeDashboardStack", {
+  env,
+  userPoolId: authStack.userPool.userPoolId,
+  userPoolClientId: authStack.userPoolClient.userPoolClientId,
 });

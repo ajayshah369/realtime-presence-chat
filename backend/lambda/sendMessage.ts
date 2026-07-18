@@ -18,7 +18,6 @@ const ddb = DynamoDBDocumentClient.from(ddbClient);
 
 const TABLE_NAME = process.env.TABLE_NAME!;
 const MESSAGES_TABLE_NAME = process.env.MESSAGES_TABLE_NAME!;
-const CONVERSATIONS_TABLE_NAME = process.env.CONVERSATIONS_TABLE_NAME!;
 const CONVERSATION_MEMBERS_TABLE_NAME =
   process.env.CONVERSATION_MEMBERS_TABLE_NAME!;
 
@@ -29,13 +28,8 @@ interface ConnectionItem {
 }
 
 interface SendMessagePayload {
-  conversationId?: string;
-  recipientUserId?: string; // shorthand: "message this person, creating a DM if needed"
+  conversationId: string;
   text: string;
-}
-
-function buildDmConversationId(userA: string, userB: string): string {
-  return `dm#${[userA, userB].sort().join("#")}`;
 }
 
 async function getConnectionsForUser(
@@ -78,44 +72,6 @@ async function isMember(
   return !!result.Item;
 }
 
-async function ensureDirectConversation(
-  userA: string,
-  userB: string,
-): Promise<string> {
-  const conversationId = buildDmConversationId(userA, userB);
-  const now = new Date().toISOString();
-
-  try {
-    await ddb.send(
-      new PutCommand({
-        TableName: CONVERSATIONS_TABLE_NAME,
-        Item: { conversationId, type: "dm", createdBy: userA, createdAt: now },
-        ConditionExpression: "attribute_not_exists(conversationId)",
-      }),
-    );
-  } catch (err: unknown) {
-    const isAlreadyExists =
-      err &&
-      typeof err === "object" &&
-      "name" in err &&
-      (err as { name?: string }).name === "ConditionalCheckFailedException";
-    if (!isAlreadyExists) throw err;
-  }
-
-  await Promise.all(
-    [userA, userB].map((userId) =>
-      ddb.send(
-        new PutCommand({
-          TableName: CONVERSATION_MEMBERS_TABLE_NAME,
-          Item: { conversationId, userId, joinedAt: now },
-        }),
-      ),
-    ),
-  );
-
-  return conversationId;
-}
-
 export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
   const {
     domainName,
@@ -133,42 +89,30 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
     }),
   );
   const sender = senderRecord.Item as ConnectionItem | undefined;
+  if (!sender) return { statusCode: 401, body: "Unknown connection" };
 
-  if (!sender) {
-    return { statusCode: 401, body: "Unknown connection" };
-  }
-
-  let body: SendMessagePayload;
+  let body: Partial<SendMessagePayload>;
   try {
     body = JSON.parse(event.body ?? "");
   } catch {
     return { statusCode: 400, body: "Invalid JSON payload" };
   }
 
-  if (!body.text || (!body.conversationId && !body.recipientUserId)) {
+  if (!body.conversationId || !body.text) {
     return {
       statusCode: 400,
-      body: 'Payload must include "text" and either "conversationId" or "recipientUserId"',
+      body: 'Payload must include "conversationId" and "text"',
     };
   }
 
-  let conversationId: string;
-
-  if (body.conversationId) {
-    if (!(await isMember(body.conversationId, sender.userId))) {
-      return {
-        statusCode: 403,
-        body: "You are not a member of this conversation",
-      };
-    }
-    conversationId = body.conversationId;
-  } else {
-    conversationId = await ensureDirectConversation(
-      sender.userId,
-      body.recipientUserId!,
-    );
+  if (!(await isMember(body.conversationId, sender.userId))) {
+    return {
+      statusCode: 403,
+      body: "You are not a member of this conversation",
+    };
   }
 
+  const conversationId = body.conversationId;
   const timestamp = new Date().toISOString();
   const messageId = randomUUID();
 
@@ -219,11 +163,8 @@ export const handler: APIGatewayProxyWebsocketHandlerV2 = async (event) => {
             ? (err as { $metadata?: { httpStatusCode?: number } }).$metadata
                 ?.httpStatusCode
             : undefined;
-        if (statusCode === 410) {
-          staleConnectionIds.push(connectionId);
-        } else {
-          console.error(`Failed to post to connection ${connectionId}`, err);
-        }
+        if (statusCode === 410) staleConnectionIds.push(connectionId);
+        else console.error(`Failed to post to connection ${connectionId}`, err);
       }
     }),
   );

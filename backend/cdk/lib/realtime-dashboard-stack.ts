@@ -152,6 +152,46 @@ export class RealtimeDashboardStack extends cdk.Stack {
       },
     );
 
+    const startConversationFn = new NodejsFunction(
+      this,
+      "StartConversationFn",
+      {
+        runtime,
+        entry: path.join(lambdaDir, "startConversation.ts"),
+        environment: {
+          TABLE_NAME: connectionsTable.tableName,
+          USERS_TABLE_NAME: usersTable.tableName,
+          CONVERSATIONS_TABLE_NAME: conversationsTable.tableName,
+          CONVERSATION_MEMBERS_TABLE_NAME: conversationMembersTable.tableName,
+        },
+      },
+    );
+
+    const listConversationsFn = new NodejsFunction(
+      this,
+      "ListConversationsFn",
+      {
+        runtime,
+        entry: path.join(lambdaDir, "listConversations.ts"),
+        environment: {
+          TABLE_NAME: connectionsTable.tableName,
+          USERS_TABLE_NAME: usersTable.tableName,
+          CONVERSATIONS_TABLE_NAME: conversationsTable.tableName,
+          CONVERSATION_MEMBERS_TABLE_NAME: conversationMembersTable.tableName,
+        },
+      },
+    );
+
+    const getMessagesFn = new NodejsFunction(this, "GetMessagesFn", {
+      runtime,
+      entry: path.join(lambdaDir, "getMessages.ts"),
+      environment: {
+        TABLE_NAME: connectionsTable.tableName,
+        MESSAGES_TABLE_NAME: messagesTable.tableName,
+        CONVERSATION_MEMBERS_TABLE_NAME: conversationMembersTable.tableName,
+      },
+    });
+
     connectionsTable.grantReadWriteData(connectFn);
     connectionsTable.grantReadWriteData(disconnectFn);
     usersTable.grantReadWriteData(connectFn);
@@ -164,6 +204,17 @@ export class RealtimeDashboardStack extends cdk.Stack {
     conversationsTable.grantReadWriteData(createConversationFn);
     conversationMembersTable.grantReadWriteData(sendMessageFn);
     conversationMembersTable.grantReadWriteData(createConversationFn);
+    connectionsTable.grantReadData(startConversationFn);
+    connectionsTable.grantReadData(listConversationsFn);
+    connectionsTable.grantReadData(getMessagesFn);
+    usersTable.grantReadData(startConversationFn);
+    usersTable.grantReadData(listConversationsFn);
+    conversationsTable.grantReadWriteData(startConversationFn);
+    conversationsTable.grantReadData(listConversationsFn);
+    conversationMembersTable.grantReadWriteData(startConversationFn);
+    conversationMembersTable.grantReadData(listConversationsFn);
+    conversationMembersTable.grantReadData(getMessagesFn);
+    messagesTable.grantReadData(getMessagesFn);
 
     const webSocketApi = new apigwv2.WebSocketApi(
       this,
@@ -205,6 +256,25 @@ export class RealtimeDashboardStack extends cdk.Stack {
       ),
     });
 
+    webSocketApi.addRoute("startConversation", {
+      integration: new integrations.WebSocketLambdaIntegration(
+        "StartConversationIntegration",
+        startConversationFn,
+      ),
+    });
+    webSocketApi.addRoute("listConversations", {
+      integration: new integrations.WebSocketLambdaIntegration(
+        "ListConversationsIntegration",
+        listConversationsFn,
+      ),
+    });
+    webSocketApi.addRoute("getMessages", {
+      integration: new integrations.WebSocketLambdaIntegration(
+        "GetMessagesIntegration",
+        getMessagesFn,
+      ),
+    });
+
     const stage = new apigwv2.WebSocketStage(this, "ProdStage", {
       webSocketApi,
       stageName: "prod",
@@ -212,6 +282,10 @@ export class RealtimeDashboardStack extends cdk.Stack {
     });
 
     stage.grantManagementApiAccess(sendMessageFn);
+    stage.grantManagementApiAccess(createConversationFn);
+    stage.grantManagementApiAccess(startConversationFn);
+    stage.grantManagementApiAccess(listConversationsFn);
+    stage.grantManagementApiAccess(getMessagesFn);
 
     new cdk.CfnOutput(this, "WebSocketURL", { value: stage.url });
   }
